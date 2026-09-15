@@ -75,7 +75,7 @@ export function parseArgs(argv) {
 
 export function printHelp() {
   const text = `
-mongo-migrate — copy documents from a MongoDB 3.6 source to a 7.x target
+mongo-ferry — copy documents from a MongoDB 3.6 source to a 7.x target
 
 Usage:
   node src/index.js --collection users
@@ -100,9 +100,9 @@ Cursor (same idea as a find cursor):
   --ids <id,id>               Migrate only these _id values
   --idType <auto|objectId|string|number>  How to parse --ids / --resumeAfter (default: auto)
   --dateField <field>         Use a Date field for --since instead of ObjectId time
-  --since <30d|ISO>           Lower bound (default: 30d)
-  --all                       Ignore the default 30-day window
-  --sort <ejson>              Cursor sort (default: {"_id":1}; resume requires this)
+  --since <30d|ISO>           Limit by time (ObjectId clock unless --dateField). Omitted = entire collection
+  --all                       Copy the entire collection (default when --since is omitted)
+  --sort <ejson|none>         Cursor sort (default: {"_id":1}, or unsorted with --dateField; resume requires {"_id":1})
   --projection <ejson>        Optional projection (_id is always kept)
   --limit <n>                 Cursor limit
   --skip <n>                  Cursor skip
@@ -127,8 +127,9 @@ Behavior:
   --failedFile <path>         Failed _ids (default: failed-ids.jsonl)
   --help                      Show this help
 
-Default 30-day window is {_id: {$gte: ObjectId.createFromTime(now-30d)}} so MongoDB 3.6
-can range-scan the _id index. Pass --dateField createdAt if you must filter on a Date field.
+Omit --since to copy the entire collection. --since 30d uses
+{_id: {$gte: ObjectId.createFromTime(now-30d)}} so MongoDB 3.6 can range-scan the _id index.
+Pass --dateField createdAt if you must filter on a Date field.
 `.trim();
 
   console.log(text);

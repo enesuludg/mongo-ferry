@@ -1,10 +1,11 @@
 import "dotenv/config";
 import { parseArgs, printHelp } from "./cli.js";
 import { loadConfig } from "./config.js";
+import { isAscendingIdSort } from "./filter.js";
 import { logger } from "./logger.js";
 import { runMigration } from "./migrator.js";
 import { createSourceClient, createTargetClient, pingClient } from "./mongo.js";
-import { describeRunOutcome, resolveExitCode } from "./outcome.js";
+import { describeRunOutcome, formatDuration, resolveExitCode } from "./outcome.js";
 import { serializeForLog } from "./serialize.js";
 import { verifyCopy } from "./verify.js";
 
@@ -18,9 +19,9 @@ async function main() {
   const config = await loadConfig(args, process.env);
   logPlan(config);
 
-  if (config.dateField && config.usedDefaultDateWindow) {
+  if (config.dateField && config.usedDefaultDateWindow && isAscendingIdSort(config.sort)) {
     logger.warn(
-      "filtering on a Date field while sorting by _id can force an in-memory sort on MongoDB 3.6; prefer the default ObjectId time window",
+      "filtering on a Date field while sorting by _id can force an in-memory sort on MongoDB 3.6; prefer --sort none or the default ObjectId time window",
     );
   }
 
@@ -45,6 +46,7 @@ async function main() {
   process.on("SIGINT", () => onSignal("SIGINT"));
   process.on("SIGTERM", () => onSignal("SIGTERM"));
 
+  const startedAt = Date.now();
   try {
     await sourceClient.connect();
     await targetClient.connect();
@@ -79,6 +81,7 @@ async function main() {
     }
   } finally {
     await Promise.allSettled([sourceClient.close(), targetClient.close()]);
+    logger.info(`took ${formatDuration(Date.now() - startedAt)}`);
   }
 }
 
@@ -98,6 +101,7 @@ function logPlan(config) {
     verify: config.verify,
     verifyOnly: config.verifyOnly,
     resumeAfter: config.resumeAfter === null || config.resumeAfter === undefined ? null : String(config.resumeAfter),
+    sort: config.sort,
     dateWindow: config.usedDefaultDateWindow
       ? {
         field: config.dateField ?? "_id",

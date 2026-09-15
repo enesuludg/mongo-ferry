@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ObjectId } from "mongodb";
+import { readFailedIds } from "../src/checkpoint.js";
 import { runMigration } from "../src/migrator.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,8 +28,69 @@ function memorySource(docs) {
 }
 
 async function tempDir() {
-  return mkdtemp(join(tmpdir(), "mongo-migrate-"));
+  return mkdtemp(join(tmpdir(), "mongo-ferry-"));
 }
+
+function retryConfig(directory, retryFile, retryIds, extra = {}) {
+  return {
+    collection: "users",
+    filter: { _id: { $in: retryIds } },
+    sort: { _id: 1 },
+    batchSize: 1,
+    concurrency: 1,
+    dryRun: false,
+    stopOnError: false,
+    onConflict: "replace",
+    checkpointFile: join(directory, "checkpoint.json"),
+    failedFile: join(directory, "other-failed.jsonl"),
+    retryFailedFile: retryFile,
+    retryIds,
+    ...extra,
+  };
+}
+
+async function writeRetryIds(filePath, ids) {
+  const body = `${ids.map((id) => JSON.stringify({ _id: id, _idType: "number" })).join("\n")}\n`;
+  await writeFile(filePath, body, "utf8");
+}
+
+test("runMigration omits sort when config.sort is empty", async () => {
+  const directory = await tempDir();
+  let findOptions;
+  await runMigration({
+    sourceCollection: {
+      find(_filter, options) {
+        findOptions = options;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { _id: 1 };
+          },
+          async close() {},
+        };
+      },
+    },
+    targetCollection: {
+      async bulkWrite() {
+        return { upsertedCount: 1, matchedCount: 0, modifiedCount: 0 };
+      },
+    },
+    config: {
+      collection: "users",
+      filter: { updatedAt: { $gte: new Date("2026-08-31") } },
+      sort: null,
+      batchSize: 10,
+      concurrency: 1,
+      dryRun: false,
+      stopOnError: false,
+      onConflict: "replace",
+      checkpointFile: join(directory, "checkpoint.json"),
+      failedFile: join(directory, "failed.jsonl"),
+    },
+    shouldStop: () => false,
+  });
+
+  assert.equal("sort" in findOptions, false);
+});
 
 test("runMigration upserts cursor documents in batches", async () => {
   const docs = [
@@ -64,6 +126,8 @@ test("runMigration upserts cursor documents in batches", async () => {
   });
 
   assert.equal(result.processed, 3);
+  assert.equal(result.created, 3);
+  assert.equal(result.updated, 0);
   assert.equal(writes.length, 2);
   const sizes = writes.map((write) => write.length).sort((left, right) => left - right);
   assert.deepEqual(sizes, [1, 2]);
@@ -71,6 +135,42 @@ test("runMigration upserts cursor documents in batches", async () => {
 
   const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
   assert.equal(checkpoint.lastId, String(docs[2]._id));
+});
+
+test("runMigration reports created vs updated from bulkWrite counts", async () => {
+  const docs = [{ _id: 1 }, { _id: 2 }, { _id: 3 }];
+  const directory = await tempDir();
+
+  const result = await runMigration({
+    sourceCollection: memorySource(docs),
+    targetCollection: {
+      async bulkWrite(operations) {
+        const created = operations.filter((operation) => operation.replaceOne.filter._id !== 2).length;
+        return {
+          upsertedCount: created,
+          matchedCount: operations.length - created,
+          modifiedCount: operations.length - created,
+        };
+      },
+    },
+    config: {
+      collection: "users",
+      filter: {},
+      sort: { _id: 1 },
+      batchSize: 10,
+      concurrency: 1,
+      dryRun: false,
+      stopOnError: false,
+      onConflict: "replace",
+      checkpointFile: join(directory, "checkpoint.json"),
+      failedFile: join(directory, "failed.jsonl"),
+    },
+    shouldStop: () => false,
+  });
+
+  assert.equal(result.processed, 3);
+  assert.equal(result.created, 2);
+  assert.equal(result.updated, 1);
 });
 
 test("migrator keeps multiple bulkWrites in flight", async () => {
@@ -286,11 +386,8 @@ test("runMigration marks interrupted when stop is requested", async () => {
 test("retryFailed prunes successful ids from the file", async () => {
   const directory = await tempDir();
   const retryFile = join(directory, "failed-ids.jsonl");
-  await writeFile(
-    retryFile,
-    `${JSON.stringify({ _id: 1, _idType: "number" })}\n${JSON.stringify({ _id: 2, _idType: "number" })}\n`,
-    "utf8",
-  );
+  await writeRetryIds(retryFile, [1, 2]);
+  const config = retryConfig(directory, retryFile, [1, 2], { batchSize: 10 });
 
   await runMigration({
     sourceCollection: memorySource([{ _id: 1 }, { _id: 2 }]),
@@ -299,25 +396,131 @@ test("retryFailed prunes successful ids from the file", async () => {
         return { upsertedCount: 2, matchedCount: 0, modifiedCount: 0 };
       },
     },
-    config: {
-      collection: "users",
-      filter: { _id: { $in: [1, 2] } },
-      sort: { _id: 1 },
-      batchSize: 10,
-      concurrency: 1,
-      dryRun: false,
-      stopOnError: false,
-      onConflict: "replace",
-      checkpointFile: join(directory, "checkpoint.json"),
-      failedFile: join(directory, "other-failed.jsonl"),
-      retryFailedFile: retryFile,
-      retryIds: [1, 2],
-    },
+    config,
     shouldStop: () => false,
   });
 
   const remaining = await readFile(retryFile, "utf8");
   assert.equal(remaining, "");
+  assert.equal("retryKeySet" in config, false);
+});
+
+test("retryFailed keeps unattempted ids when interrupted", async () => {
+  const directory = await tempDir();
+  const retryFile = join(directory, "failed-ids.jsonl");
+  const ids = [1, 2, 3, 4, 5];
+  await writeRetryIds(retryFile, ids);
+
+  let yielded = 0;
+  const result = await runMigration({
+    sourceCollection: {
+      find() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            for (const id of ids) {
+              yielded += 1;
+              yield { _id: id };
+            }
+          },
+          async close() {},
+        };
+      },
+    },
+    targetCollection: {
+      async bulkWrite() {
+        return { upsertedCount: 1, matchedCount: 0, modifiedCount: 0 };
+      },
+    },
+    config: retryConfig(directory, retryFile, ids),
+    shouldStop: () => yielded > 1,
+  });
+
+  assert.equal(result.interrupted, true);
+  assert.equal(result.processed, 1);
+  assert.deepEqual(await readFailedIds(retryFile, "number"), [2, 3, 4, 5]);
+});
+
+test("retryFailed keeps unattempted ids when stopOnError aborts", async () => {
+  const directory = await tempDir();
+  const retryFile = join(directory, "failed-ids.jsonl");
+  const ids = [1, 2, 3, 4, 5];
+  await writeRetryIds(retryFile, ids);
+
+  await assert.rejects(
+    () => runMigration({
+      sourceCollection: memorySource([{ _id: 1 }]),
+      targetCollection: {
+        async bulkWrite() {
+          const error = new Error("validation");
+          error.code = 121;
+          error.writeErrors = [{ index: 0, code: 121 }];
+          throw error;
+        },
+      },
+      config: retryConfig(directory, retryFile, ids, { stopOnError: true }),
+      shouldStop: () => false,
+    }),
+    /batch 0 failed/,
+  );
+
+  assert.deepEqual(await readFailedIds(retryFile, "number"), [1, 2, 3, 4, 5]);
+});
+
+test("retryFailed prunes copied ids but keeps the rest when stopOnError aborts later", async () => {
+  const directory = await tempDir();
+  const retryFile = join(directory, "failed-ids.jsonl");
+  const ids = [1, 2, 3, 4, 5];
+  await writeRetryIds(retryFile, ids);
+
+  await assert.rejects(
+    () => runMigration({
+      sourceCollection: memorySource([{ _id: 1 }, { _id: 2 }]),
+      targetCollection: {
+        async bulkWrite(operations) {
+          const firstId = operations[0].replaceOne.filter._id;
+          if (firstId === 2) {
+            const error = new Error("validation");
+            error.code = 121;
+            error.writeErrors = [{ index: 0, code: 121 }];
+            throw error;
+          }
+          return { upsertedCount: operations.length, matchedCount: 0, modifiedCount: 0 };
+        },
+      },
+      config: retryConfig(directory, retryFile, ids, { stopOnError: true }),
+      shouldStop: () => false,
+    }),
+    /batch 1 failed/,
+  );
+
+  assert.deepEqual(await readFailedIds(retryFile, "number"), [2, 3, 4, 5]);
+});
+
+test("retryFailed prunes earlier successes when a later batch fails", async () => {
+  const directory = await tempDir();
+  const retryFile = join(directory, "failed-ids.jsonl");
+  const ids = [1, 2, 3];
+  await writeRetryIds(retryFile, ids);
+
+  await runMigration({
+    sourceCollection: memorySource(ids.map((id) => ({ _id: id }))),
+    targetCollection: {
+      async bulkWrite(operations) {
+        const firstId = operations[0].replaceOne.filter._id;
+        if (firstId === 2) {
+          const error = new Error("validation");
+          error.code = 121;
+          error.writeErrors = [{ index: 0, code: 121 }];
+          throw error;
+        }
+        return { upsertedCount: operations.length, matchedCount: 0, modifiedCount: 0 };
+      },
+    },
+    config: retryConfig(directory, retryFile, ids),
+    shouldStop: () => false,
+  });
+
+  assert.deepEqual(await readFailedIds(retryFile, "number"), [2]);
 });
 
 test("unwritable failedFile does not let checkpoint skip failed ids", async () => {

@@ -4,11 +4,13 @@ import { ObjectId } from "mongodb";
 import {
   buildCursorFilter,
   ensureProjectionKeepsId,
+  hasCursorSort,
   isAscendingIdSort,
   mergeAndFilters,
   objectIdFromTime,
   parseExtendedJson,
   parseSince,
+  parseSort,
 } from "../src/filter.js";
 import { parseIdList } from "../src/ids.js";
 
@@ -93,4 +95,16 @@ test("isAscendingIdSort only accepts {_id:1}", () => {
   assert.equal(isAscendingIdSort({ _id: 1 }), true);
   assert.equal(isAscendingIdSort({ createdAt: 1 }), false);
   assert.equal(isAscendingIdSort({ _id: 1, createdAt: 1 }), false);
+  assert.equal(isAscendingIdSort(null), false);
+  assert.equal(isAscendingIdSort({}), false);
+});
+
+test("parseSort defaults to _id unless dateField or none", () => {
+  assert.deepEqual(parseSort(), { _id: 1 });
+  assert.equal(parseSort(undefined, { dateField: "updatedAt" }), null);
+  assert.equal(parseSort("none"), null);
+  assert.equal(parseSort("{}"), null);
+  assert.deepEqual(parseSort('{"updatedAt":1}'), { updatedAt: 1 });
+  assert.equal(hasCursorSort(null), false);
+  assert.equal(hasCursorSort({ updatedAt: 1 }), true);
 });

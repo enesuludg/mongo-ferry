@@ -1,3 +1,4 @@
+import { hasCursorSort } from "./filter.js";
 import { logger } from "./logger.js";
 import { serializeForLog } from "./serialize.js";
 
@@ -11,8 +12,8 @@ export async function verifyCopy({ sourceCollection, targetCollection, config })
 
   const cursor = sourceCollection.find(config.filter, {
     projection: { _id: 1 },
-    sort: config.sort,
     batchSize: config.batchSize,
+    ...(hasCursorSort(config.sort) ? { sort: config.sort } : {}),
     ...(config.hint ? { hint: config.hint } : {}),
   });
 

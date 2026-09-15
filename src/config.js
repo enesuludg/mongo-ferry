@@ -9,6 +9,7 @@ import {
   parseInteger,
   parsePositiveInteger,
   parseSince,
+  parseSort,
 } from "./filter.js";
 import { assertIdType, idKey, parseId, parseIdList } from "./ids.js";
 import { resolveDatabaseName } from "./mongo.js";
@@ -36,12 +37,13 @@ export async function loadConfig(args, env) {
   const idType = assertIdType(first(args.idType, env.ID_TYPE, DEFAULTS.idType));
   const queryRaw = args.query ? args.query : args.queryFile ? await readFile(args.queryFile, "utf8") : "";
   const query = parseExtendedJson(queryRaw);
-  const sort = args.sort ? parseExtendedJson(args.sort) : { _id: 1 };
+  const sort = parseSort(args.sort, { dateField });
   const projection = ensureProjectionKeepsId(args.projection ? parseExtendedJson(args.projection) : undefined);
   const retryFailedFile = args.retryFailed;
   const retryIds = retryFailedFile ? await readFailedIds(retryFailedFile, idType) : [];
   const ids = uniqueIds([...parseIdList(args.ids, idType), ...retryIds]);
-  const migrateAll = Boolean(args.all);
+  const sinceSpecified = Boolean(args.since);
+  const migrateAll = Boolean(args.all) || (!sinceSpecified && !dateField);
   const resumeRequested = Boolean(args.resume);
   const checkpointFile = first(args.checkpointFile, env.CHECKPOINT_FILE, DEFAULTS.checkpointFile);
   const skip = args.skip === undefined ? undefined : parseInteger(args.skip, 0);
@@ -97,7 +99,9 @@ export async function loadConfig(args, env) {
     filter,
     sort,
     projection,
-    hint: usedDefaultDateWindow && !dateField && isAscendingIdSort(sort) ? { _id: 1 } : undefined,
+    hint: !dateField && ids.length === 0 && !hasExplicitQuery(query) && isAscendingIdSort(sort)
+      ? { _id: 1 }
+      : undefined,
     limit: args.limit === undefined ? undefined : parseInteger(args.limit, undefined),
     skip,
     batchSize: parsePositiveInteger(first(args.batchSize, env.BATCH_SIZE), DEFAULTS.batchSize),

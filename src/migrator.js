@@ -1,8 +1,10 @@
 import { appendFailedIds, createCheckpointWindow, pruneFailedIds } from "./checkpoint.js";
+import { hasCursorSort } from "./filter.js";
 import { idKey } from "./ids.js";
 import { logger } from "./logger.js";
 import { createTaskPool } from "./pool.js";
 import { serializeForLog } from "./serialize.js";
+import { formatDuration } from "./outcome.js";
 import { createBulkWriter } from "./writer.js";
 
 export async function runMigration({
@@ -25,7 +27,7 @@ export async function runMigration({
     filePath: config.checkpointFile,
     initialId: config.resumeAfter,
   });
-  config.retryKeySet = new Set((config.retryIds ?? []).map(idKey));
+  const retryKeySet = new Set((config.retryIds ?? []).map(idKey));
   const cursor = openCursor(sourceCollection, config);
   const state = { fatal: null };
   let nextSeq = 0;
@@ -52,6 +54,7 @@ export async function runMigration({
           stats,
           checkpoint,
           state,
+          retryKeySet,
         }));
       }
     }
@@ -67,6 +70,7 @@ export async function runMigration({
         stats,
         checkpoint,
         state,
+        retryKeySet,
       }));
     }
 
@@ -91,11 +95,13 @@ export async function runMigration({
 
 function openCursor(collection, config) {
   const options = {
-    sort: config.sort,
     batchSize: config.batchSize,
     noCursorTimeout: true,
   };
 
+  if (hasCursorSort(config.sort)) {
+    options.sort = config.sort;
+  }
   if (config.projection) {
     options.projection = config.projection;
   }
@@ -117,10 +123,10 @@ async function runDryRun(collection, config, stats) {
   const skip = config.skip || 0;
   const sample = await collection
     .find(config.filter, {
-      sort: config.sort,
       projection: { _id: 1 },
       skip,
       limit: 5,
+      ...(hasCursorSort(config.sort) ? { sort: config.sort } : {}),
       ...(config.hint ? { hint: config.hint } : {}),
     })
     .toArray();
@@ -142,12 +148,12 @@ async function runDryRun(collection, config, stats) {
   return stats.snapshot();
 }
 
-async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state }) {
+async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state, retryKeySet }) {
   const lastId = docs[docs.length - 1]._id;
 
   try {
     const result = await writer.write(docs);
-    stats.record(result, config.retryKeySet);
+    stats.record(result, retryKeySet, docs);
     const failedIds = result.failedIds;
     let recorded = failedIds.length === 0;
 
@@ -196,7 +202,8 @@ async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state 
   } catch (error) {
     const failedIds = docs.map((doc) => doc._id);
     stats.failed += docs.length;
-    stats.noteFailedIds(failedIds, config.retryKeySet);
+    stats.noteAttemptedIds(failedIds, retryKeySet);
+    stats.noteFailedIds(failedIds, retryKeySet);
     let recorded = false;
     try {
       await appendFailedIds(config.failedFile, failedIds, error.message);
@@ -240,7 +247,10 @@ async function pruneRetryFile(config, stats) {
     return;
   }
 
-  const succeeded = config.retryIds.filter((id) => !stats.failedRetryKeys.has(idKey(id)));
+  const succeeded = config.retryIds.filter((id) => {
+    const key = idKey(id);
+    return stats.attemptedRetryKeys.has(key) && !stats.failedRetryKeys.has(key);
+  });
   await pruneFailedIds(config.retryFailedFile, succeeded, config.idType);
 }
 
@@ -252,30 +262,27 @@ function createStats() {
     submitted: 0,
     failed: 0,
     failedRetryKeys: new Set(),
+    attemptedRetryKeys: new Set(),
     upserted: 0,
     matched: 0,
     modified: 0,
     lastId: null,
     lastLogAt: 0,
-    record(result, retryKeySet) {
+    record(result, retryKeySet, docs) {
       this.submitted += result.submitted;
       this.processed += result.succeeded;
       this.failed += result.failedIds.length;
+      this.noteAttemptedIds(docs.map((doc) => doc._id), retryKeySet);
       this.noteFailedIds(result.failedIds, retryKeySet);
       this.upserted += result.upserted;
       this.matched += result.matched;
       this.modified += result.modified;
     },
+    noteAttemptedIds(ids, retryKeySet) {
+      addRetryKeys(this.attemptedRetryKeys, ids, retryKeySet);
+    },
     noteFailedIds(ids, retryKeySet) {
-      if (!retryKeySet || retryKeySet.size === 0) {
-        return;
-      }
-      for (const id of ids) {
-        const key = idKey(id);
-        if (retryKeySet.has(key)) {
-          this.failedRetryKeys.add(key);
-        }
-      }
+      addRetryKeys(this.failedRetryKeys, ids, retryKeySet);
     },
     snapshot() {
       const elapsedMs = Date.now() - startedAt;
@@ -284,15 +291,27 @@ function createStats() {
         processed: this.processed,
         submitted: this.submitted,
         failed: this.failed,
-        upserted: this.upserted,
-        matched: this.matched,
-        modified: this.modified,
+        created: this.upserted,
+        updated: this.matched,
         lastId: this.lastId ? String(this.lastId) : null,
         elapsedMs,
+        elapsed: formatDuration(elapsedMs),
         docsPerSecond,
       };
     },
   };
+}
+
+function addRetryKeys(target, ids, retryKeySet) {
+  if (!retryKeySet || retryKeySet.size === 0) {
+    return;
+  }
+  for (const id of ids) {
+    const key = idKey(id);
+    if (retryKeySet.has(key)) {
+      target.add(key);
+    }
+  }
 }
 
 function maybeLogProgress(stats, collection) {

@@ -138,9 +138,30 @@ export function ensureProjectionKeepsId(projection) {
   return { ...projection, _id: 1 };
 }
 
+export function parseSort(raw, { dateField } = {}) {
+  if (raw === undefined || raw === null || raw === "") {
+    return dateField ? null : { _id: 1 };
+  }
+
+  const trimmed = String(raw).trim();
+  if (trimmed.toLowerCase() === "none") {
+    return null;
+  }
+
+  const parsed = parseExtendedJson(trimmed);
+  if (Object.keys(parsed).length === 0) {
+    return null;
+  }
+  return parsed;
+}
+
+export function hasCursorSort(sort) {
+  return Boolean(sort && typeof sort === "object" && Object.keys(sort).length > 0);
+}
+
 export function isAscendingIdSort(sort) {
-  if (!sort) {
-    return true;
+  if (!hasCursorSort(sort)) {
+    return false;
   }
   const keys = Object.keys(sort);
   return keys.length === 1 && keys[0] === "_id" && Number(sort._id) === 1;

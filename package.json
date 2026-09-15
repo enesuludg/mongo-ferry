@@ -1,11 +1,19 @@
 {
-  "name": "mongo-migrate",
+  "name": "mongo-ferry",
   "version": "1.0.0",
   "private": true,
-  "description": "High-throughput batch migrator for copying MongoDB documents from 3.6 source clusters to 7.x targets.",
+  "description": "High-throughput batch copy from MongoDB 3.6 source clusters to 7.x targets.",
   "type": "module",
   "engines": {
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enesuludg/mongo-ferry.git"
+  },
+  "homepage": "https://github.com/enesuludg/mongo-ferry#readme",
+  "bugs": {
+    "url": "https://github.com/enesuludg/mongo-ferry/issues"
   },
   "scripts": {
     "start": "node src/index.js",

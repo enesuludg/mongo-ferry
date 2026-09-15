@@ -8,21 +8,36 @@ const URIS = {
   TARGET_URI: "mongodb://localhost:27017/targetDb",
 };
 
-test("loadConfig builds a last-30-days ObjectId-time cursor by default", async () => {
+test("loadConfig copies the whole collection when --since is omitted", async () => {
   const config = await loadConfig({}, URIS);
 
   assert.equal(config.collection, "users");
   assert.equal(config.targetCollection, "users");
   assert.equal(config.sourceDb, "sourceDb");
   assert.equal(config.targetDb, "targetDb");
-  assert.equal(config.usedDefaultDateWindow, true);
-  assert.equal(config.usedObjectIdWindow, true);
-  assert.ok(config.filter._id.$gte instanceof ObjectId);
+  assert.equal(config.usedDefaultDateWindow, false);
+  assert.equal(config.usedObjectIdWindow, false);
+  assert.equal(config.migrateAll, true);
+  assert.deepEqual(config.filter, {});
   assert.deepEqual(config.hint, { _id: 1 });
+  assert.deepEqual(config.sort, { _id: 1 });
   assert.equal(config.batchSize, 1000);
   assert.equal(config.concurrency, 16);
   assert.equal(config.targetPoolSize, 64);
   assert.equal(config.onConflict, "replace");
+});
+
+test("loadConfig env SINCE does not apply a window without --since", async () => {
+  const config = await loadConfig({}, { ...URIS, SINCE: "7d" });
+  assert.equal(config.migrateAll, true);
+  assert.deepEqual(config.filter, {});
+});
+
+test("loadConfig --since applies an ObjectId time window", async () => {
+  const config = await loadConfig({ since: "15d" }, URIS);
+  assert.equal(config.usedDefaultDateWindow, true);
+  assert.equal(config.usedObjectIdWindow, true);
+  assert.ok(config.filter._id.$gte instanceof ObjectId);
 });
 
 test("loadConfig prefers explicit query over the default date window", async () => {
@@ -51,11 +66,43 @@ test("loadConfig uses a Date field only when --dateField is set", async () => {
   const config = await loadConfig({ dateField: "createdAt" }, URIS);
   assert.ok(config.filter.createdAt.$gte instanceof Date);
   assert.equal(config.usedObjectIdWindow, false);
+  assert.equal(config.sort, null);
+});
+
+test("loadConfig dateField stays unsorted unless --sort is set", async () => {
+  const unsorted = await loadConfig({ dateField: "updatedAt", since: "15d" }, URIS);
+  assert.equal(unsorted.sort, null);
+
+  const byUpdatedAt = await loadConfig(
+    { dateField: "updatedAt", sort: '{"updatedAt":1}' },
+    URIS,
+  );
+  assert.deepEqual(byUpdatedAt.sort, { updatedAt: 1 });
+
+  const byId = await loadConfig(
+    { dateField: "updatedAt", sort: '{"_id":1}' },
+    URIS,
+  );
+  assert.deepEqual(byId.sort, { _id: 1 });
+});
+
+test("loadConfig sort none disables cursor sort", async () => {
+  const config = await loadConfig({ sort: "none" }, URIS);
+  assert.equal(config.sort, null);
+  assert.equal(config.hint, undefined);
 });
 
 test("loadConfig rejects resume when sort is not {_id:1}", async () => {
   await assert.rejects(
     () => loadConfig({ resume: true, sort: '{"createdAt":1}' }, URIS),
+    /require the default sort/,
+  );
+  await assert.rejects(
+    () => loadConfig({ resume: true, dateField: "updatedAt" }, URIS),
+    /require the default sort/,
+  );
+  await assert.rejects(
+    () => loadConfig({ resume: true, sort: "none" }, URIS),
     /require the default sort/,
   );
 });
