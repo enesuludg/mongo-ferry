@@ -84,14 +84,14 @@ Writes use `ordered: false`. Partial `writeErrors` fail only the errored indexes
 
 ## Resume and failed ids
 
-Checkpointing stores the last `_id` of the contiguous batch prefix after both **successful** and **already-recorded failed** seqs. A failed batch is written to `failed-ids.jsonl` and the window can keep moving so a later crash still has a resume point. Recover those `_id`s with `--retryFailed` (successes are then removed from that file). `--resume` / `--resumeAfter` require `sort: {_id:1}` (the default).
+Checkpointing stores the last `_id` of the contiguous batch prefix after both **successful** seqs and **failed seqs whose `_id`s were actually written to `failed-ids.jsonl`**. If that file cannot be written, the window **does not move** and the process exits 1, so `--resume` cannot skip ids that have no recovery path. Recover persisted failures with `--retryFailed` (successes are then removed from that file). `--resume` / `--resumeAfter` require `sort: {_id:1}` (the default).
 
 ```bash
 npm run migrate -- --collection users --resume
 npm run migrate -- --retryFailed failed-ids.jsonl --collection users
 ```
 
-`SIGINT` / `SIGTERM` drain in-flight writes, then exit **1** with `migration interrupted` (not `migration finished`). `--stopOnError` also drains, flushes the checkpoint, and closes clients before exiting.
+`SIGINT` / `SIGTERM` drain in-flight writes, then exit **1** with `migration interrupted` (not `migration finished`). Any run with `failed > 0` also exits **1** (`migration finished with failures`) so cron/CI sees a partial copy. `--stopOnError` drains, flushes the checkpoint, and closes clients before exiting.
 
 ## Dry run and verify
 

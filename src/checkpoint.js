@@ -38,28 +38,34 @@ export function appendFailedIds(filePath, ids, reason) {
   }
 
   const previous = appendChains.get(filePath) ?? Promise.resolve();
-  const next = previous
-    .then(async () => {
-      const lines = ids
-        .map((id) => {
-          const described = describeId(id);
-          return JSON.stringify({
-            _id: described.value,
-            _idType: described.type,
-            reason,
-            at: new Date().toISOString(),
-          });
-        })
-        .join("\n");
-      await appendFile(filePath, `${lines}\n`, "utf8");
-      logger.warn(`wrote ${ids.length} failed _id(s) to ${filePath}`);
-    })
-    .catch((error) => {
-      logger.warn("failed-id append failed", { message: error.message });
-    });
+  const next = previous.catch(() => undefined).then(async () => {
+    const lines = ids
+      .map((id) => {
+        const described = describeId(id);
+        return JSON.stringify({
+          _id: described.value,
+          _idType: described.type,
+          reason,
+          at: new Date().toISOString(),
+        });
+      })
+      .join("\n");
+    await appendFile(filePath, `${lines}\n`, "utf8");
+    logger.warn(`wrote ${ids.length} failed _id(s) to ${filePath}`);
+  });
 
-  appendChains.set(filePath, next);
-  return next;
+  const tracked = next.catch(() => undefined);
+  appendChains.set(filePath, tracked);
+  tracked.finally(() => {
+    if (appendChains.get(filePath) === tracked) {
+      appendChains.delete(filePath);
+    }
+  });
+
+  return next.catch((error) => {
+    logger.error("failed-id append failed", { message: error.message, filePath });
+    throw error;
+  });
 }
 
 export async function readFailedIds(filePath, idType = "auto") {
@@ -137,12 +143,12 @@ export function createCheckpointWindow({ filePath, initialId = null, write = wri
 
   return {
     lastCommittedId: () => lastCommittedId,
-    report({ seq, lastId, ok, extra = {} }) {
+    report({ seq, lastId, ok, recorded = true, extra = {} }) {
       chain = chain
         .then(async () => {
           if (ok) {
             succeeded.set(seq, lastId);
-          } else {
+          } else if (recorded) {
             failed.add(seq);
           }
 

@@ -319,3 +319,44 @@ test("retryFailed prunes successful ids from the file", async () => {
   const remaining = await readFile(retryFile, "utf8");
   assert.equal(remaining, "");
 });
+
+test("unwritable failedFile does not let checkpoint skip failed ids", async () => {
+  const docs = Array.from({ length: 6 }, (_item, index) => ({ _id: index + 1 }));
+  const directory = await tempDir();
+  const checkpointFile = join(directory, "checkpoint.json");
+  const failedFile = join(directory, "missing", "failed.jsonl");
+
+  await assert.rejects(
+    () => runMigration({
+      sourceCollection: memorySource(docs),
+      targetCollection: {
+        async bulkWrite(operations) {
+          const firstId = operations[0].replaceOne.filter._id;
+          if (firstId === 1) {
+            const error = new Error("validation");
+            error.code = 121;
+            error.writeErrors = operations.map((_op, index) => ({ index, code: 121 }));
+            throw error;
+          }
+          return { upsertedCount: operations.length, matchedCount: 0, modifiedCount: 0 };
+        },
+      },
+      config: {
+        collection: "users",
+        filter: {},
+        sort: { _id: 1 },
+        batchSize: 2,
+        concurrency: 3,
+        dryRun: false,
+        stopOnError: false,
+        onConflict: "replace",
+        checkpointFile,
+        failedFile,
+      },
+      shouldStop: () => false,
+    }),
+    /failed-id append failed/,
+  );
+
+  await assert.rejects(() => readFile(checkpointFile), { code: "ENOENT" });
+});

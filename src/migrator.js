@@ -25,6 +25,7 @@ export async function runMigration({
     filePath: config.checkpointFile,
     initialId: config.resumeAfter,
   });
+  config.retryKeySet = new Set((config.retryIds ?? []).map(idKey));
   const cursor = openCursor(sourceCollection, config);
   const state = { fatal: null };
   let nextSeq = 0;
@@ -146,20 +147,36 @@ async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state 
 
   try {
     const result = await writer.write(docs);
-    stats.record(result);
+    stats.record(result, config.retryKeySet);
+    const failedIds = result.failedIds;
+    let recorded = failedIds.length === 0;
 
-    if (result.failedIds.length > 0) {
-      await appendFailedIds(config.failedFile, result.failedIds, "bulkWrite");
+    if (failedIds.length > 0) {
+      try {
+        await appendFailedIds(config.failedFile, failedIds, "bulkWrite");
+        recorded = true;
+      } catch (error) {
+        logger.error("could not persist failed ids; checkpoint will not advance past this batch", {
+          seq,
+          message: error.message,
+        });
+        state.fatal = Object.assign(
+          new Error(`failed-id append failed for batch ${seq}: ${error.message}`),
+          { failedIds, cause: error },
+        );
+      }
+
       logger.error("batch had failed documents", {
         seq,
-        failed: result.failedIds.length,
+        failed: failedIds.length,
         succeeded: result.succeeded,
         lastId: String(lastId),
+        recorded,
       });
-      if (config.stopOnError) {
+      if (recorded && config.stopOnError && !state.fatal) {
         state.fatal = Object.assign(
-          new Error(`batch ${seq} failed (${result.failedIds.length} document(s))`),
-          { failedIds: result.failedIds },
+          new Error(`batch ${seq} failed (${failedIds.length} document(s))`),
+          { failedIds },
         );
       }
     }
@@ -167,7 +184,8 @@ async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state 
     await checkpoint.report({
       seq,
       lastId,
-      ok: result.failedIds.length === 0,
+      ok: failedIds.length === 0,
+      recorded,
       extra: {
         collection: config.collection,
         processed: stats.processed,
@@ -176,15 +194,34 @@ async function flushBatch({ seq, docs, writer, config, stats, checkpoint, state 
     stats.lastId = checkpoint.lastCommittedId();
     maybeLogProgress(stats, config.collection);
   } catch (error) {
+    const failedIds = docs.map((doc) => doc._id);
     stats.failed += docs.length;
-    stats.failedIds.push(...docs.map((doc) => doc._id));
-    await appendFailedIds(config.failedFile, docs.map((doc) => doc._id), error.message);
+    stats.noteFailedIds(failedIds, config.retryKeySet);
+    let recorded = false;
+    try {
+      await appendFailedIds(config.failedFile, failedIds, error.message);
+      recorded = true;
+    } catch (appendError) {
+      logger.error("could not persist failed ids; checkpoint will not advance past this batch", {
+        seq,
+        message: appendError.message,
+      });
+      state.fatal = Object.assign(
+        new Error(`failed-id append failed for batch ${seq}: ${appendError.message}`),
+        { failedIds, cause: appendError },
+      );
+    }
+
     await checkpoint.report({
       seq,
       lastId,
       ok: false,
+      recorded,
       extra: { collection: config.collection, processed: stats.processed },
     });
+    if (!recorded) {
+      return;
+    }
     if (config.stopOnError) {
       state.fatal = error;
       return;
@@ -203,8 +240,7 @@ async function pruneRetryFile(config, stats) {
     return;
   }
 
-  const stillFailed = new Set(stats.failedIds.map(idKey));
-  const succeeded = config.retryIds.filter((id) => !stillFailed.has(idKey(id)));
+  const succeeded = config.retryIds.filter((id) => !stats.failedRetryKeys.has(idKey(id)));
   await pruneFailedIds(config.retryFailedFile, succeeded, config.idType);
 }
 
@@ -215,20 +251,31 @@ function createStats() {
     processed: 0,
     submitted: 0,
     failed: 0,
-    failedIds: [],
+    failedRetryKeys: new Set(),
     upserted: 0,
     matched: 0,
     modified: 0,
     lastId: null,
     lastLogAt: 0,
-    record(result) {
+    record(result, retryKeySet) {
       this.submitted += result.submitted;
       this.processed += result.succeeded;
       this.failed += result.failedIds.length;
-      this.failedIds.push(...result.failedIds);
+      this.noteFailedIds(result.failedIds, retryKeySet);
       this.upserted += result.upserted;
       this.matched += result.matched;
       this.modified += result.modified;
+    },
+    noteFailedIds(ids, retryKeySet) {
+      if (!retryKeySet || retryKeySet.size === 0) {
+        return;
+      }
+      for (const id of ids) {
+        const key = idKey(id);
+        if (retryKeySet.has(key)) {
+          this.failedRetryKeys.add(key);
+        }
+      }
     },
     snapshot() {
       const elapsedMs = Date.now() - startedAt;

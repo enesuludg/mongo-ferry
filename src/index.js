@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { runMigration } from "./migrator.js";
 import { createSourceClient, createTargetClient, pingClient } from "./mongo.js";
+import { describeRunOutcome, resolveExitCode } from "./outcome.js";
 import { serializeForLog } from "./serialize.js";
 import { verifyCopy } from "./verify.js";
 
@@ -60,11 +61,13 @@ async function main() {
         config,
         shouldStop: () => stopRequested,
       });
-      if (result.interrupted) {
-        logger.warn("migration interrupted", result);
-        process.exitCode = 1;
+      const exitCode = resolveExitCode(result);
+      const message = describeRunOutcome(result);
+      if (exitCode === 0) {
+        logger.info(message, result);
       } else {
-        logger.info("migration finished", result);
+        logger.warn(message, result);
+        process.exitCode = exitCode;
       }
     }
 

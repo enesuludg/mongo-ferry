@@ -9,6 +9,20 @@ async function tempDir() {
   return mkdtemp(join(tmpdir(), "mongo-checkpoint-"));
 }
 
+test("checkpoint window does not slide over an unrecorded failure", async () => {
+  const directory = await tempDir();
+  const filePath = join(directory, "checkpoint.json");
+  const window = createCheckpointWindow({ filePath });
+
+  await window.report({ seq: 1, lastId: "b", ok: true });
+  await window.report({ seq: 2, lastId: "c", ok: true });
+  await window.report({ seq: 0, lastId: "a", ok: false, recorded: false });
+  await window.flush();
+
+  await assert.rejects(() => readFile(filePath), { code: "ENOENT" });
+  assert.equal(window.lastCommittedId(), null);
+});
+
 test("checkpoint window advances past recorded failed seqs", async () => {
   const directory = await tempDir();
   const filePath = join(directory, "checkpoint.json");
@@ -94,4 +108,12 @@ test("appendFailedIds serializes concurrent writers and pruneFailedIds drops suc
   await pruneFailedIds(filePath, ["a", "c"]);
   const remaining = await readFailedIds(filePath);
   assert.deepEqual(remaining, ["b"]);
+});
+
+test("appendFailedIds rejects when the path cannot be written", async () => {
+  const directory = await tempDir();
+  await assert.rejects(
+    () => appendFailedIds(join(directory, "missing", "failed.jsonl"), [1, 2], "x"),
+    /ENOENT/,
+  );
 });

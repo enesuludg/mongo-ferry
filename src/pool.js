@@ -36,17 +36,27 @@ export function createTaskPool(concurrency) {
     }
   }
 
+  function markCompleted() {
+    completed += 1;
+    notifyDrain();
+  }
+
   async function schedule(task) {
     submitted += 1;
-    await acquire();
+    try {
+      await acquire();
+    } catch (error) {
+      markCompleted();
+      throw error;
+    }
+
     const running = Promise.resolve()
       .then(task)
       .catch(() => undefined)
       .finally(() => {
         inFlight.delete(running);
         release();
-        completed += 1;
-        notifyDrain();
+        markCompleted();
       });
     inFlight.add(running);
   }
