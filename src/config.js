@@ -136,12 +136,20 @@ export async function loadConfig(args, env) {
 
 function resolveHint({ rawHint, dateField, sort, ids, query }) {
   if (rawHint) {
-    return parseExtendedJson(rawHint);
+    return parseHint(rawHint);
   }
   if (!dateField && ids.length === 0 && !hasExplicitQuery(query) && isAscendingIdSort(sort)) {
     return { _id: 1 };
   }
   return undefined;
+}
+
+function parseHint(raw) {
+  const trimmed = String(raw).trim();
+  if (trimmed.startsWith("{")) {
+    return parseExtendedJson(trimmed);
+  }
+  return trimmed;
 }
 
 function uniqueIds(ids) {

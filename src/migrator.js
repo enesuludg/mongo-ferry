@@ -14,9 +14,11 @@ export async function runMigration({
   shouldStop,
 }) {
   const stats = createStats();
+  const hint = await resolveRuntimeHint(sourceCollection, config);
+  const cursorConfig = hint === config.hint ? config : { ...config, hint };
 
-  if (config.dryRun) {
-    return runDryRun(sourceCollection, config, stats);
+  if (cursorConfig.dryRun) {
+    return runDryRun(sourceCollection, cursorConfig, stats);
   }
 
   const writer = createBulkWriter(targetCollection, {
@@ -28,20 +30,35 @@ export async function runMigration({
     initialId: config.resumeAfter,
   });
   const retryKeySet = new Set((config.retryIds ?? []).map(idKey));
-  const cursor = openCursor(sourceCollection, config);
+  logger.info("opening source cursor", {
+    collection: cursorConfig.collection,
+    batchSize: cursorConfig.batchSize,
+    hint: cursorConfig.hint ?? null,
+    sort: cursorConfig.sort,
+  });
+  const cursorOpenedAt = Date.now();
+  const cursor = openCursor(sourceCollection, cursorConfig);
   const state = { fatal: null };
   let nextSeq = 0;
   let batch = [];
+  let sawFirstDocument = false;
 
   try {
     for await (const document of cursor) {
+      if (!sawFirstDocument) {
+        sawFirstDocument = true;
+        logger.info("source cursor returned the first document", {
+          elapsed: formatDuration(Date.now() - cursorOpenedAt),
+          _id: String(document._id),
+        });
+      }
       if (shouldStop() || state.fatal) {
         logger.warn("stop requested, finishing in-flight batches");
         break;
       }
 
       batch.push(document);
-      if (batch.length >= config.batchSize) {
+      if (batch.length >= cursorConfig.batchSize) {
         const docs = batch;
         batch = [];
         const seq = nextSeq;
@@ -50,7 +67,7 @@ export async function runMigration({
           seq,
           docs,
           writer,
-          config,
+          config: cursorConfig,
           stats,
           checkpoint,
           state,
@@ -66,7 +83,7 @@ export async function runMigration({
         seq,
         docs: batch,
         writer,
-        config,
+        config: cursorConfig,
         stats,
         checkpoint,
         state,
@@ -76,7 +93,7 @@ export async function runMigration({
 
     await pool.drain();
     await checkpoint.flush();
-    await pruneRetryFile(config, stats);
+    await pruneRetryFile(cursorConfig, stats);
     stats.lastId = checkpoint.lastCommittedId();
     const snapshot = stats.snapshot();
     snapshot.interrupted = Boolean(shouldStop()) && !state.fatal;
@@ -91,6 +108,57 @@ export async function runMigration({
   } finally {
     await cursor.close().catch(() => undefined);
   }
+}
+
+async function resolveRuntimeHint(collection, config) {
+  if (config.hint) {
+    return config.hint;
+  }
+  if (!config.dateField) {
+    return config.hint;
+  }
+
+  const discovered = await discoverDateFieldHint(collection, config.dateField);
+  if (discovered) {
+    logger.info("using source index for date filter", {
+      dateField: config.dateField,
+      hint: discovered.key,
+      name: discovered.name,
+    });
+    return discovered.key;
+  }
+
+  logger.warn("no single-field index found for --dateField; MongoDB 3.6 may collection-scan", {
+    dateField: config.dateField,
+    batchSize: config.batchSize,
+  });
+  return undefined;
+}
+
+async function discoverDateFieldHint(collection, dateField) {
+  if (typeof collection.indexes !== "function") {
+    return null;
+  }
+
+  let indexes;
+  try {
+    indexes = await collection.indexes();
+  } catch (error) {
+    logger.warn("could not list source indexes", { message: error.message });
+    return null;
+  }
+
+  const singles = (Array.isArray(indexes) ? indexes : []).filter((index) => {
+    const keys = index?.key && Object.keys(index.key);
+    return keys?.length === 1 && keys[0] === dateField;
+  });
+  if (singles.length === 0) {
+    return null;
+  }
+
+  const descending = singles.find((index) => index.key[dateField] === -1);
+  const chosen = descending ?? singles[0];
+  return { key: chosen.key, name: chosen.name };
 }
 
 function openCursor(collection, config) {

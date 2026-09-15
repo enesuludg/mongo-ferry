@@ -48,10 +48,14 @@ async function main() {
 
   const startedAt = Date.now();
   try {
+    logger.info("connecting to source and target");
     await sourceClient.connect();
+    logger.info("source connected");
     await targetClient.connect();
+    logger.info("target connected");
     await pingClient(sourceClient, "source");
     await pingClient(targetClient, "target");
+    logger.info("source and target ping ok");
 
     const sourceCollection = sourceClient.db(config.sourceDb).collection(config.collection);
     const targetCollection = targetClient.db(config.targetDb).collection(config.targetCollection);

@@ -92,6 +92,52 @@ test("runMigration omits sort when config.sort is empty", async () => {
   assert.equal("sort" in findOptions, false);
 });
 
+test("runMigration hints a single-field date index from the source", async () => {
+  const directory = await tempDir();
+  let findOptions;
+  await runMigration({
+    sourceCollection: {
+      async indexes() {
+        return [
+          { key: { _id: 1 }, name: "_id_" },
+          { key: { isOnline: 1, updatedAt: 1 }, name: "isOnlineUpdatedAtIdx" },
+          { key: { updatedAt: -1 }, name: "updatedAtReverse" },
+        ];
+      },
+      find(_filter, options) {
+        findOptions = options;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { _id: 1 };
+          },
+          async close() {},
+        };
+      },
+    },
+    targetCollection: {
+      async bulkWrite() {
+        return { upsertedCount: 1, matchedCount: 0, modifiedCount: 0 };
+      },
+    },
+    config: {
+      collection: "users",
+      filter: { updatedAt: { $gte: new Date("2026-09-13") } },
+      dateField: "updatedAt",
+      sort: null,
+      batchSize: 10,
+      concurrency: 1,
+      dryRun: false,
+      stopOnError: false,
+      onConflict: "replace",
+      checkpointFile: join(directory, "checkpoint.json"),
+      failedFile: join(directory, "failed.jsonl"),
+    },
+    shouldStop: () => false,
+  });
+
+  assert.deepEqual(findOptions.hint, { updatedAt: -1 });
+});
+
 test("runMigration upserts cursor documents in batches", async () => {
   const docs = [
     { _id: new ObjectId(), name: "one" },

@@ -94,6 +94,12 @@ test("loadConfig dateField stays unsorted unless --sort is set", async () => {
     URIS,
   );
   assert.deepEqual(explicitHint.hint, { updatedAt: -1 });
+
+  const namedHint = await loadConfig(
+    { dateField: "updatedAt", hint: "updatedAtReverse" },
+    URIS,
+  );
+  assert.equal(namedHint.hint, "updatedAtReverse");
 });
 
 test("loadConfig sort none disables cursor sort", async () => {
