@@ -1,0 +1,19 @@
+{
+  "name": "mongo-migrate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "High-throughput batch migrator for copying MongoDB documents from 3.6 source clusters to 7.x targets.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "migrate": "node src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "mongodb": "4.17.2"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+.env
+.migrate-checkpoint.json
+failed-ids.jsonl
+npm-debug.log*
+.DS_Store
