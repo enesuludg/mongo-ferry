@@ -51,7 +51,7 @@ ObjectId timestamps are second-resolution and only work for ObjectId `_id`s. To 
 npm run migrate -- --collection users --dateField updatedAt --since 15d
 ```
 
-`--dateField` does **not** sort by `_id` unless you pass `--sort '{"_id":1}'`. Sorting a date filter by `_id` on 3.6 can force an in-memory sort. `--resume` still requires `{_id:1}`.
+`--dateField` does **not** sort by `_id` unless you pass `--sort '{"_id":1}'`. Sorting a date filter by `_id` on 3.6 can force an in-memory sort. `--resume` still requires `{_id:1}`. mongo-ferry does not guess a `--dateField` index hint (3.6 returns `bad hint` if the key pattern does not exist). Pass `--hint` only with a key pattern from `db.collection.getIndexes()`. Throughput is usually limited by fetching full documents from the source, not `--concurrency`; `--projection` and running near the source help more. `--onConflict skip` inserts only missing `_id`s and will not refresh already-copied docs.
 
 ```bash
 npm run migrate -- \

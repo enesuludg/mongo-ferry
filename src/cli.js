@@ -38,6 +38,7 @@ const VALUE_FLAGS = new Set([
   "onConflict",
   "retryFailed",
   "idType",
+  "hint",
 ]);
 
 const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
@@ -103,6 +104,7 @@ Cursor (same idea as a find cursor):
   --since <30d|ISO>           Limit by time (ObjectId clock unless --dateField). Omitted = entire collection
   --all                       Copy the entire collection (default when --since is omitted)
   --sort <ejson|none>         Cursor sort (default: {"_id":1}, or unsorted with --dateField; resume requires {"_id":1})
+  --hint <ejson>              Index hint (default: {_id:1} only for ObjectId --since; never guessed for --dateField)
   --projection <ejson>        Optional projection (_id is always kept)
   --limit <n>                 Cursor limit
   --skip <n>                  Cursor skip

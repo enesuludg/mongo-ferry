@@ -32,6 +32,7 @@ export function resolveDatabaseName(explicitName, uri) {
 }
 
 const SOCKET_TIMEOUT_MS = 300_000;
+const WIRE_COMPRESSION = { compressors: ["zlib"] };
 
 export function createSourceClient(uri, poolSize, directConnection = false) {
   return new MongoClient(uri, {
@@ -42,6 +43,7 @@ export function createSourceClient(uri, poolSize, directConnection = false) {
     connectTimeoutMS: 30_000,
     serverSelectionTimeoutMS: 30_000,
     socketTimeoutMS: SOCKET_TIMEOUT_MS,
+    ...WIRE_COMPRESSION,
     ...(directConnection ? { directConnection: true } : {}),
   });
 }
@@ -55,6 +57,7 @@ export function createTargetClient(uri, poolSize, writeConcern, directConnection
     connectTimeoutMS: 30_000,
     serverSelectionTimeoutMS: 30_000,
     socketTimeoutMS: SOCKET_TIMEOUT_MS,
+    ...WIRE_COMPRESSION,
     ...(directConnection ? { directConnection: true } : {}),
   });
 }

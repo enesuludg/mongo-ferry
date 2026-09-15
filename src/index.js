@@ -102,6 +102,7 @@ function logPlan(config) {
     verifyOnly: config.verifyOnly,
     resumeAfter: config.resumeAfter === null || config.resumeAfter === undefined ? null : String(config.resumeAfter),
     sort: config.sort,
+    hint: config.hint,
     dateWindow: config.usedDefaultDateWindow
       ? {
         field: config.dateField ?? "_id",

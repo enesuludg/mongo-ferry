@@ -67,23 +67,33 @@ test("loadConfig uses a Date field only when --dateField is set", async () => {
   assert.ok(config.filter.createdAt.$gte instanceof Date);
   assert.equal(config.usedObjectIdWindow, false);
   assert.equal(config.sort, null);
+  assert.equal(config.hint, undefined);
 });
 
 test("loadConfig dateField stays unsorted unless --sort is set", async () => {
   const unsorted = await loadConfig({ dateField: "updatedAt", since: "15d" }, URIS);
   assert.equal(unsorted.sort, null);
+  assert.equal(unsorted.hint, undefined);
 
   const byUpdatedAt = await loadConfig(
     { dateField: "updatedAt", sort: '{"updatedAt":1}' },
     URIS,
   );
   assert.deepEqual(byUpdatedAt.sort, { updatedAt: 1 });
+  assert.equal(byUpdatedAt.hint, undefined);
 
   const byId = await loadConfig(
     { dateField: "updatedAt", sort: '{"_id":1}' },
     URIS,
   );
   assert.deepEqual(byId.sort, { _id: 1 });
+  assert.equal(byId.hint, undefined);
+
+  const explicitHint = await loadConfig(
+    { dateField: "updatedAt", hint: '{"updatedAt":-1}' },
+    URIS,
+  );
+  assert.deepEqual(explicitHint.hint, { updatedAt: -1 });
 });
 
 test("loadConfig sort none disables cursor sort", async () => {

@@ -99,9 +99,13 @@ export async function loadConfig(args, env) {
     filter,
     sort,
     projection,
-    hint: !dateField && ids.length === 0 && !hasExplicitQuery(query) && isAscendingIdSort(sort)
-      ? { _id: 1 }
-      : undefined,
+    hint: resolveHint({
+      rawHint: args.hint,
+      dateField,
+      sort,
+      ids,
+      query,
+    }),
     limit: args.limit === undefined ? undefined : parseInteger(args.limit, undefined),
     skip,
     batchSize: parsePositiveInteger(first(args.batchSize, env.BATCH_SIZE), DEFAULTS.batchSize),
@@ -128,6 +132,16 @@ export async function loadConfig(args, env) {
     usedDefaultDateWindow,
     usedObjectIdWindow: usedDefaultDateWindow && !dateField,
   };
+}
+
+function resolveHint({ rawHint, dateField, sort, ids, query }) {
+  if (rawHint) {
+    return parseExtendedJson(rawHint);
+  }
+  if (!dateField && ids.length === 0 && !hasExplicitQuery(query) && isAscendingIdSort(sort)) {
+    return { _id: 1 };
+  }
+  return undefined;
 }
 
 function uniqueIds(ids) {
